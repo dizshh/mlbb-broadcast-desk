@@ -133,6 +133,34 @@ function requestTeamPalette(side,src){
   img.src=src;
 }
 
+function scoreboardPlayerRails(s) {
+  return ['blue', 'red'].map(side => `
+    <div class="player-rail ${side}" aria-label="${side} player stats">
+      ${s[side].players.map((p, i) => {
+        const hImg = (typeof imgHero === 'function' ? imgHero(p.hero) : '') || (p.hero ? `<img src="/assets/wiki/heroes/icon-${encodeURIComponent(p.hero.toLowerCase())}.png" alt="${esc(p.hero)}" onerror="this.style.display='none'">` : '<span>◇</span>');
+        const items = Array.isArray(p.items) ? p.items.filter(Boolean) : [];
+        return `
+          <div class="rail-player">
+            <div class="rail-name"><span>${p.level || '1'}</span><b>${esc(p.name || 'Player ' + (i + 1))}</b></div>
+            <div class="rail-body">
+              <div class="rail-hero" title="${esc(p.hero || '')}">${hImg}</div>
+              <div class="rail-numbers">
+                <strong>${esc(p.kda || '0/0/0')}</strong>
+                <small>${scoreIcon('gold', 'Gold')}${p.gold ? gold(p.gold) : '0k'}</small>
+                ${items.length > 0 ? `<div class="rail-items-row" style="display:flex;gap:2px;justify-content:center;margin-top:2px;">${items.slice(0, 6).map(it => {
+                  const icon = typeof it === 'object' ? it.icon : '';
+                  const name = typeof it === 'object' ? it.name : String(it);
+                  return icon ? `<img src="${esc(icon)}" title="${esc(name)}" alt="${esc(name)}" style="width:14px;height:14px;border-radius:2px;background:#000;">` : '';
+                }).join('')}</div>` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `).join('');
+}
+
 function renderReferenceScoreboard(s) {
   const entering = !previousHudValues || !stage.querySelector('.reference-scoreboard');
   const previous = entering ? null : previousHudValues;
@@ -153,7 +181,6 @@ function renderReferenceScoreboard(s) {
     </div>`;
   };
   stage.innerHTML = `<div class="reference-scoreboard${entering ? ' hud-enter' : ''}">
-    <div class="sb-flag"><img src="/assets/pasiklaban/usm.png" alt="University of Southern Mindanao seal"></div>
     <div class="sb-team-logo blue${identityChanged('blue') ? ' hud-changed' : ''}">${logo(s.blue)}</div>
     <div class="sb-team-data blue">${scoreStats(s.blue, 'blue', previous)}${lower('blue')}</div>
     <div class="sb-kills blue${previous && previous.blue.kills !== s.blue.kills ? ' hud-changed' : ''}" aria-label="Blue kills">${scoreboardValue(s.blue.kills, previous?.blue.kills)}</div>
@@ -162,7 +189,7 @@ function renderReferenceScoreboard(s) {
     <div class="sb-team-data red">${scoreStats(s.red, 'red', previous)}${lower('red')}</div>
     <div class="sb-team-logo red${identityChanged('red') ? ' hud-changed' : ''}">${logo(s.red)}</div>
     ${scoreboardBroadcastPanel(s)}
-  </div>`;
+  </div>${scoreboardPlayerRails(s)}`;
   previousHudValues = current;
   for(const side of ['blue','red']){
     const src=stage.querySelector(`.sb-team-logo.${side} img`)?.src||'';

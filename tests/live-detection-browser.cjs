@@ -30,7 +30,8 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),asse
     });
     const started=performance.now();await page.click('#autoDetectCapture');
     await page.waitForFunction(()=>state.scene==='scoreboard'&&state.blue.kills===4&&state.red.kills===2&&state.blue.gold===12400&&state.red.gold===11400&&state.gameTime==='01:47',{},{timeout:15000});
-    assert.equal(await overlay.locator('.player-rail').count(),0);
+    assert.equal(await overlay.locator('.player-rail').count(),2);
+    assert.equal(await overlay.locator('.rail-player').count(),10);
     const editStart=performance.now();await page.evaluate(()=>{fixtureKills=5;fixtureClock=108;paintFixture();});
     await overlay.waitForFunction(()=>document.querySelector('.sb-kills.blue')?.textContent==='5'&&state.gameTime==='01:48',{},{timeout:10000});
     const liveUpdateMs=Math.round(performance.now()-editStart);

@@ -6,6 +6,7 @@ public/assets/uploads/
 .env
 .env.*
 !.env.example
+ai-config.json
 *.log
 Thumbs.db
 .DS_Store

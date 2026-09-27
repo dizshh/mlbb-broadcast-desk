@@ -7,7 +7,7 @@ $('#teamEditors').innerHTML=teamHTML('blue')+teamHTML('red');
 $$('[data-path]').forEach(el=>el.onchange=run(()=>el.dataset.path==='bestOf'?save({bestOf:Number(el.value),game:Math.min(state.game,Number(el.value))}):save(patchAt(el.dataset.path,el.type==='number'?Number(el.value):el.value))));$$('[data-player]').forEach(el=>el.onchange=run(()=>{const [side,i,k]=el.dataset.player.split('.'),players=structuredClone(state[side].players);players[i][k]=['gold','level'].includes(k)?Number(el.value):el.value;return save({[side]:{players}});}));$$('[data-ban]').forEach(el=>el.onchange=run(()=>{const [side,i]=el.dataset.ban.split('.'),bans=Array.from({length:5},(_,i)=>state[side].bans[i]||'');bans[i]=el.value;return save({[side]:{bans}});}));
 function render(s){state=s;$('#eventSummary').textContent=s.event;$('#formatSummary').textContent=`BO${s.bestOf} / GAME ${s.game}`;$('#sceneSummary').textContent=(s.visible?'':'HIDDEN / ')+(scenes.find(x=>x[0]===s.scene)?.[1]||'Swiss archive');$('#toggleOutput').textContent=s.visible?'Hide output':'Show output';$$('[data-scene]').forEach(e=>e.classList.toggle('selected',e.dataset.scene===s.scene));$$('[data-path]').forEach(el=>{if(el!==document.activeElement)el.value=at(s,el.dataset.path);});$$('[data-player]').forEach(el=>{const [side,i,k]=el.dataset.player.split('.');if(el!==document.activeElement)el.value=s[side].players[i][k];});$$('[data-ban]').forEach(el=>{const [side,i]=el.dataset.ban.split('.'),off=Number(i)>=DraftFormat.banCount(s);if(el!==document.activeElement)el.value=s[side].bans[i]||'';el.hidden=off;const picker=el.nextElementSibling;if(picker?.classList.contains('hero-choice'))picker.hidden=off;});$$('.teamhead .panelhead>span').forEach(el=>el.textContent=`5 PICKS / ${DraftFormat.banCount(s)} BANS`);$('#scoreControls').innerHTML=['blue','red'].map(side=>`<div class="scoreline ${side}"><span class="badge">${esc(s[side].tag)}</span><strong>${esc(s[side].name)}</strong><button aria-label="Decrease ${side} series score" data-score="${side}" data-delta="-1">Ã¢Ë†â€™</button><b>${s[side].score}</b><button aria-label="Increase ${side} series score" data-score="${side}" data-delta="1">+</button></div>`).join('');$$('[data-score]').forEach(b=>b.onclick=run(()=>save({[b.dataset.score]:{score:Math.max(0,state[b.dataset.score].score+Number(b.dataset.delta))}})));if(!scheduleDirty&&!$('#scheduleRows').contains(document.activeElement))renderSchedule(s.schedule);}
 $('#toggleOutput').onclick=run(()=>save({visible:!state.visible}));$('#swap').onclick=run(()=>save({blue:state.red,red:state.blue,winner:state.winner==='blue'?'red':'blue'}));$$('[data-timer]').forEach(b=>b.onclick=run(()=>api('/api/timer',{timer:b.dataset.timer,action:b.dataset.action,seconds:Number($(b.dataset.timer==='countdown'?'#countdownSeconds':'#draftSeconds').value)})));
-function clockText(t){let n=Math.ceil(t.endAt===null?t.remaining:Math.max(0,(t.endAt-Date.now())/1000));return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;}setInterval(()=>{if(state)$$('[data-clock]').forEach(e=>e.textContent=clockText(state[e.dataset.clock]));},200);
+function clockText(t){if(!t)return '00:00';if(t.running!==undefined&&t.seconds!==undefined){let n=t.running?Math.min(86400,t.seconds+Math.max(0,Math.floor((Date.now()-(t.syncedAt||Date.now()))/1000))):t.seconds;return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;}let n=Math.ceil(t.endAt===null?t.remaining:Math.max(0,(t.endAt-Date.now())/1000));return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;}setInterval(()=>{if(state)$$('[data-clock]').forEach(e=>e.textContent=clockText(state[e.dataset.clock]));},200);
 const events=new EventSource('/api/events');events.onmessage=e=>{render(JSON.parse(e.data));$('#connection').textContent='Engine connected / live sync';$('#connection').classList.remove('offline');};events.onerror=()=>{$('#connection').textContent='Disconnected ? reconnecting';$('#connection').classList.add('offline');};
 Promise.all([api('/assets/catalog.json'),api('/assets/match-team-logos.json')]).then(([c,matchLogos])=>{organizationLogos=[...(c.logos||[]),...Object.entries(matchLogos).filter(([n])=>!(c.logos||[]).some(l=>l.name.trim().toUpperCase()===n.trim().toUpperCase())).map(([name,url])=>({name,url}))];$('#heroes').innerHTML=c.heroes.map(h=>'<option value="'+esc(h.name)+'">').join('');$$('.logoSelect').forEach(s=>{s.innerHTML+='<optgroup label="Qualified tournament teams">'+Object.entries(matchLogos).filter(([name])=>(state?.swiss?.teams||[]).some(t=>t.status==="qualified"&&t.name.trim().toUpperCase()===name.trim().toUpperCase())).map(([name,url])=>'<option value="'+esc(url)+'">'+esc(name)+'</option>').join('')+'</optgroup><optgroup label="Other organization logos">'+c.logos.map(l=>'<option value="'+esc(l.url)+'">'+esc(l.name)+'</option>').join('')+'</optgroup>';if(state)s.value=at(state,s.dataset.path);});if(state&&!scheduleDirty)renderSchedule(state.schedule);}).catch(e=>toast(e.message,true));
 function mappings(){const v=JSON.parse($('#mapping').value);if(!v||Array.isArray(v)||typeof v!=='object')throw Error('Mappings must be a JSON object');localStorage.setItem('mapping',JSON.stringify(v));return v;}$('#mapping').value=localStorage.getItem('mapping')||'{}';$('#matchId').value=localStorage.getItem('matchId')||'';
@@ -25,6 +25,55 @@ $('#fetchMatch').onclick=run(()=>fetchMatch());$('#parseJson').onclick=run(async
   $('#sourceSummary').textContent='Post-match result · '+new Date().toLocaleTimeString();
   toast('Post-match result applied. '+(result.playoffs?.message||''));
 });$('#raw').oninput=()=>showParsed(null);$('#mapping').oninput=()=>showParsed(null);
+// AI Vision Key Configuration & Scoreboard Handlers
+(async()=>{
+  const keyInp=$('#geminiApiKey'),statusEl=$('#aiKeyStatus');
+  if(keyInp&&statusEl){
+    const savedLocal=localStorage.getItem('geminiApiKey')||'';
+    if(savedLocal)keyInp.value=savedLocal;
+    try{
+      const cfg=await api('/api/ai/config',{});
+      if(cfg.hasKey){
+        statusEl.textContent='● Key Active ('+(cfg.masked||'configured')+')';
+        statusEl.style.color='#34d399';
+        if(!keyInp.value&&cfg.masked)keyInp.placeholder='Saved on server: '+cfg.masked;
+      }else if(!savedLocal){
+        statusEl.textContent='○ No API key set (Local OCR only)';
+        statusEl.style.color='#94a3b8';
+      }
+    }catch{}
+  }
+  $('#saveAiKey')?.addEventListener('click',run(async()=>{
+    const val=$('#geminiApiKey').value.trim();
+    localStorage.setItem('geminiApiKey',val);
+    await api('/api/ai/config',{geminiApiKey:val});
+    toast(val?'Gemini Vision AI key saved!':'AI key cleared. Using local OCR.');
+    if(statusEl){
+      statusEl.textContent=val?'● Key Active':'○ No API key set (Local OCR only)';
+      statusEl.style.color=val?'#34d399':'#94a3b8';
+    }
+  }));
+  $('#toggleAiKeyVisible')?.addEventListener('click',()=>{
+    if(keyInp)keyInp.type=keyInp.type==='password'?'text':'password';
+  });
+})();
+
+$('#postgameAiScan')?.addEventListener('click',run(async()=>{
+  if(typeof PostgameOCR==='undefined')throw Error('Scoreboard analyzer loading...');
+  await PostgameOCR.captureActiveWindow();
+}));
+$('#postgameCaptureLive')?.addEventListener('click',run(async()=>{
+  if(typeof PostgameOCR==='undefined')throw Error('Scoreboard analyzer loading...');
+  await PostgameOCR.captureActiveWindow();
+}));
+$('#postgameUploadFile')?.addEventListener('change',run(async(e)=>{
+  const file=e.target.files?.[0];
+  if(!file)return;
+  if(typeof PostgameOCR==='undefined')throw Error('Scoreboard analyzer loading...');
+  await PostgameOCR.handleFile(file);
+}));
+
+
 
 function renderSchedule(rows){const options=v=>'<option value="">Auto-match logo by team name</option>'+organizationLogos.map(l=>'<option value="'+esc(l.url)+'"'+(v===l.url?' selected':'')+'>'+esc(l.name)+'</option>').join('');$('#scheduleRows').innerHTML=rows.map((r,i)=>'<div class="scheduleRow"><div class="fields">'+['time','blue','red','note'].map(k=>'<label>'+k+'<input data-schedule="'+i+'.'+k+'" value="'+esc(r[k])+'"></label>').join('')+'<label>Blue logo<select data-schedule="'+i+'.blueLogo">'+options(r.blueLogo||'')+'</select></label><label>Red logo<select data-schedule="'+i+'.redLogo">'+options(r.redLogo||'')+'</select></label><button data-remove="'+i+'" aria-label="Remove match">Remove</button></div></div>').join('');$$('[data-remove]').forEach(b=>b.onclick=()=>{scheduleDirty=true;const rows=readSchedule();rows.splice(Number(b.dataset.remove),1);renderSchedule(rows);});}function readSchedule(){const rows=[];$$('[data-schedule]').forEach(e=>{const [i,k]=e.dataset.schedule.split('.');(rows[i]??={})[k]=e.value;});return rows;}$('#addSchedule').onclick=()=>{scheduleDirty=true;renderSchedule([...readSchedule(),{time:'18:00',blue:'TEAM A',red:'TEAM B',note:'BO3'}]);};$('#saveSchedule').onclick=run(async()=>{await save({schedule:readSchedule()});scheduleDirty=false;toast('Schedule saved');});
 $('#outputLinks').innerHTML=[['program','Program'],...scenes.map(([id,n])=>[id,n])].map(([id,n])=>{const url=location.origin+'/overlay.html'+(id==='program'?'':'?scene='+id);return `<div class="outputrow"><strong>${n}</strong><code>${url}</code><button data-copy="${url}">Copy URL</button><a href="${url}" target="_blank">Open Ã¢â€ â€”</a></div>`;}).join('');$$('[data-copy]').forEach(b=>b.onclick=run(async()=>{await navigator.clipboard.writeText(b.dataset.copy);toast('OBS URL copied');}));$('#exportState').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}));a.download='pasiklab-production.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};$('#importState').onchange=run(async e=>{if(!e.target.files[0])return;await save(JSON.parse(await e.target.files[0].text()));toast('Production backup restored');});

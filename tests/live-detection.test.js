@@ -69,3 +69,63 @@ test('draft requires both its explicit heading and a valid countdown',()=>{
   const state=defaults();state.blue.bans=['','',''];validate(state);
   const {patch}=prepare(state,body('draft',[{field:'blue.bans.4',value:'Paquito'}]),10000);assert.equal(patch.blue.bans.length,5);validate(merge(state,patch));
 });
+
+test('calibrated spectator boxes match 1080p MLBB spectator layout exactly',()=>{
+  const game = Model.profiles.game;
+  const find = f => game.find(r => r.field === f);
+  assert.deepEqual([find('gameTime').x, find('gameTime').y, find('gameTime').w, find('gameTime').h], [915, 38, 90, 42]);
+  assert.deepEqual([find('blue.kills').x, find('blue.kills').y, find('blue.kills').w, find('blue.kills').h], [840, 38, 68, 44]);
+  assert.deepEqual([find('red.kills').x, find('red.kills').y, find('red.kills').w, find('red.kills').h], [1012, 38, 68, 44]);
+  assert.deepEqual([find('blue.gold').x, find('blue.gold').y, find('blue.gold').w, find('blue.gold').h], [742, 40, 85, 40]);
+  assert.deepEqual([find('red.gold').x, find('red.gold').y, find('red.gold').w, find('red.gold').h], [1092, 40, 85, 40]);
+  assert.deepEqual([find('blue.turrets').x, find('blue.turrets').y, find('blue.turrets').w, find('blue.turrets').h], [672, 40, 32, 40]);
+  assert.deepEqual([find('red.turrets').x, find('red.turrets').y, find('red.turrets').w, find('red.turrets').h], [1216, 40, 32, 40]);
+  assert.deepEqual([find('blue.players.0.name').x, find('blue.players.0.name').y, find('blue.players.0.name').w, find('blue.players.0.name').h], [10, 380, 160, 24]);
+  assert.deepEqual([find('blue.players.0.kda').x, find('blue.players.0.kda').y, find('blue.players.0.kda').w, find('blue.players.0.kda').h], [72, 404, 92, 24]);
+  assert.deepEqual([find('blue.players.0.level').x, find('blue.players.0.level').y, find('blue.players.0.level').w, find('blue.players.0.level').h], [6, 432, 26, 22]);
+  assert.deepEqual([find('blue.players.0.hero').x, find('blue.players.0.hero').y, find('blue.players.0.hero').w, find('blue.players.0.hero').h], [14, 390, 46, 46]);
+  assert.deepEqual([find('red.players.0.name').x, find('red.players.0.name').y, find('red.players.0.name').w, find('red.players.0.name').h], [1745, 380, 160, 24]);
+  assert.deepEqual([find('red.players.0.kda').x, find('red.players.0.kda').y, find('red.players.0.kda').w, find('red.players.0.kda').h], [1745, 404, 92, 24]);
+  assert.deepEqual([find('red.players.0.level').x, find('red.players.0.level').y, find('red.players.0.level').w, find('red.players.0.level').h], [1888, 432, 26, 22]);
+  assert.deepEqual([find('red.players.0.hero').x, find('red.players.0.hero').y, find('red.players.0.hero').w, find('red.players.0.hero').h], [1860, 390, 46, 46]);
+});
+
+test('monotonic stat guards prevent kills, turrets, levels and kda from jumping downwards',()=>{
+  const state = defaults();
+  state.blue.kills = 8;
+  state.blue.turrets = 3;
+  state.blue.players[0].name = 'Player 1';
+  state.blue.players[0].hero = 'Akai';
+  state.blue.players[0].level = 9;
+  state.blue.players[0].kda = '4/1/3';
+
+  // Attempt to apply lower values due to temporary OCR misreads
+  const out = prepare(state, body('game', [
+    { field: 'blue.kills', value: 7 }, // lower than 8 -> held
+    { field: 'blue.turrets', value: 2 }, // lower than 3 -> held
+    { field: 'blue.players.0.hero', value: 'Akai' },
+    { field: 'blue.players.0.level', value: 8 }, // lower than 9 -> held
+    { field: 'blue.players.0.kda', value: '3/1/3' }, // kills decreased -> held
+  ]), 10000);
+
+  assert.equal(out.patch.blue?.kills, undefined);
+  assert.equal(out.patch.blue?.turrets, undefined);
+  assert.equal(out.patch.blue?.players?.[0]?.level, 9);
+  assert.equal(out.patch.blue?.players?.[0]?.kda, '4/1/3');
+  assert.equal(out.held.length, 4);
+
+  // Valid non-decreasing values should apply cleanly
+  const outGood = prepare(state, body('game', [
+    { field: 'blue.kills', value: 9 },
+    { field: 'blue.turrets', value: 4 },
+    { field: 'blue.players.0.hero', value: 'Akai' },
+    { field: 'blue.players.0.level', value: 10 },
+    { field: 'blue.players.0.kda', value: '5/1/4' },
+  ]), 10000);
+
+  assert.equal(outGood.patch.blue.kills, 9);
+  assert.equal(outGood.patch.blue.turrets, 4);
+  assert.equal(outGood.patch.blue.players[0].level, 10);
+  assert.equal(outGood.patch.blue.players[0].kda, '5/1/4');
+  assert.equal(outGood.held.length, 0);
+});

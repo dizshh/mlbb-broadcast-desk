@@ -1,12 +1,14 @@
 const Playoffs=require('./public/playoffs-model');
 const PlayoffResults=require('./lib/playoff-results');
+const AiLiveState=require('./lib/ai-live-state');
 const Breaks=require('./public/breaks-shared');const {saveMedia}=require('./lib/media');
 const express=require('express'),fs=require('node:fs'),path=require('node:path');const lanAccess=require('./lib/lan-access');
 const {defaults,merge,validate,timerAction}=require('./lib/state');const {normalize,findFeed}=require('./lib/parser');
 const app=express(),port=Number(process.env.PORT||3210),dataDir=process.env.DATA_DIR||path.join(__dirname,'data');fs.mkdirSync(dataDir,{recursive:true});const file=path.join(dataDir,'state.json');let state=defaults();if(fs.existsSync(file)){try{const saved=JSON.parse(fs.readFileSync(file,'utf8'));saved.playoffs=Playoffs.migrate(saved.playoffs);if(![3,5,7].includes(saved.bestOf)){fs.copyFileSync(file,file+'.before-series-fix');saved.bestOf=3;saved.game=Math.min(Math.max(1,saved.game||1),3);}state=validate(merge(state,saved));}catch(e){console.error('Saved state could not be loaded:',e.message);process.exit(1);}}
 const clients=new Set();function commit(patch){if(patch.gameTime!==undefined&&!patch.gameClock)patch={...patch,gameClock:{...state.gameClock,running:false}};const next=validate(merge(structuredClone(state),patch));fs.writeFileSync(file+'.tmp',JSON.stringify(next,null,2));fs.renameSync(file+'.tmp',file);state=next;for(const res of clients)res.write(`data: ${JSON.stringify(state)}\n\n`);return state;}
-app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');if(!lanAccess.allowsRequest(req))return res.status(403).json({error:'Use localhost or this computer’s private LAN address'});if(req.method==='POST'&&req.headers.origin&&req.headers.origin!==`http://${req.headers.host}`)return res.status(403).json({error:'Origin rejected'});next();});app.use(express.json({limit:'12mb'}));
-app.use(express.static(path.join(__dirname,'public')));app.use('/vendor/tesseract',express.static(path.join(__dirname,'node_modules/tesseract.js/dist')));app.use('/vendor/core',express.static(path.join(__dirname,'node_modules/tesseract.js-core')));app.use('/vendor/lang',express.static(path.join(__dirname,'node_modules/@tesseract.js-data/eng/4.0.0_best_int')));
+app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Disposition','inline');if(!lanAccess.allowsRequest(req))return res.status(403).json({error:'Use localhost or this computer’s private LAN address'});if(req.method==='POST'&&req.headers.origin&&req.headers.origin!==`http://${req.headers.host}`)return res.status(403).json({error:'Origin rejected'});next();});app.use(express.json({limit:'12mb'}));
+const staticOpts={setHeaders:(res,fp)=>{res.setHeader('Content-Disposition','inline');res.setHeader('X-Content-Type-Options','nosniff');if(fp.endsWith('.wasm'))res.setHeader('Content-Type','application/wasm');}};
+app.use(express.static(path.join(__dirname,'public'),staticOpts));app.use('/vendor/tesseract',express.static(path.join(__dirname,'node_modules/tesseract.js/dist'),staticOpts));app.use('/vendor/core',express.static(path.join(__dirname,'node_modules/tesseract.js-core'),staticOpts));app.use('/vendor/lang',express.static(path.join(__dirname,'node_modules/@tesseract.js-data/eng/4.0.0_best_int'),staticOpts));
 app.post('/api/media',express.raw({type:'application/octet-stream',limit:'200mb'}),(req,res)=>res.json(saveMedia(req.body,path.join(__dirname,'public/assets/uploads'))));
 const cutout=require('./lib/photo-cutout').createCutout(__dirname,dataDir);
 app.post('/api/photo/cutout',async(req,res)=>{try{res.json(await cutout(String(req.body.url||'')));}catch(e){res.status(503).json({cutout:false,error:e.message});}});
@@ -24,14 +26,15 @@ app.post('/api/ads/action',(req,res)=>res.json(commit({breaks:{rotation:Breaks.r
 app.post('/api/layout',(req,res)=>{const {scene,id,value,resetScene}=req.body;if(!require('./public/layout-model').scenes.includes(scene))throw Error('Invalid layout scene');let layouts=state.layouts.filter(r=>!(r.scene===scene&&(resetScene===true||r.id===id)));if(resetScene!==true&&value!==null)layouts.push({scene,id,...value});res.json(commit({layouts}));});
 const ocrSamples=new Map();
 let detection=null;
-function pauseDetection(){
+function cancelDetectionRequests(){for(const controller of detection?.requests||[])controller.abort();}
+function pauseDetection(now=Date.now()){
   if(!detection)return;const patch={};
-  if(detection.draftTimer&&state.draftTimer.endAt!==null&&state.draftTimer.endAt===detection.draftTimer.endAt)patch.draftTimer={...state.draftTimer,remaining:Math.max(0,(state.draftTimer.endAt-Date.now())/1000),endAt:null};
-  if(detection.gameClock&&state.gameClock.running&&state.gameClock.syncedAt===detection.gameClock.syncedAt&&state.gameClock.seconds===detection.gameClock.seconds){const n=Math.min(86400,state.gameClock.seconds+Math.max(0,Math.floor((Date.now()-state.gameClock.syncedAt)/1000)));patch.gameTime=String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');patch.gameClock={running:false,seconds:n,syncedAt:Date.now()};}
+  if(detection.draftTimer&&state.draftTimer.endAt!==null&&state.draftTimer.endAt===detection.draftTimer.endAt)patch.draftTimer={...state.draftTimer,remaining:Math.max(0,(state.draftTimer.endAt-now)/1000),endAt:null};
+  if(detection.gameClock&&state.gameClock.running&&state.gameClock.syncedAt===detection.gameClock.syncedAt&&state.gameClock.seconds===detection.gameClock.seconds){const n=Math.min(86400,state.gameClock.seconds+Math.max(0,Math.floor((now-state.gameClock.syncedAt)/1000)));patch.gameTime=String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');patch.gameClock={running:false,seconds:n,syncedAt:now};}
   if(Object.keys(patch).length)commit(patch);detection.gameClock=null;detection.draftTimer=null;
 }
-app.post('/api/detection/start',(req,res)=>{pauseDetection();detection={id:require('node:crypto').randomUUID(),sampledAt:0,samples:new Map(),playoffReadings:new Map(),seenAt:Date.now()};res.json({session:detection.id});});
-app.post('/api/detection/stop',(req,res)=>{if(detection?.id===req.body.session){pauseDetection();detection=null;}res.json({stopped:true});});
+app.post('/api/detection/start',(req,res)=>{cancelDetectionRequests();pauseDetection();const source=req.body.source==='ai'?'ai':'ocr';detection={id:require('node:crypto').randomUUID(),source,timeoutMs:source==='ai'?15000:4000,sampledAt:0,samples:new Map(),playoffReadings:new Map(),seenAt:Date.now()};res.json({session:detection.id});});
+app.post('/api/detection/stop',(req,res)=>{if(detection?.id===req.body.session){cancelDetectionRequests();pauseDetection();detection=null;}res.json({stopped:true});});
 app.post('/api/detection/hold',(req,res)=>{if(detection?.id===req.body.session)pauseDetection();res.json({held:true});});
 app.post('/api/detection',(req,res)=>{
   if(!detection||req.body.session!==detection.id)return res.json({applied:0,expired:true});
@@ -52,12 +55,15 @@ app.post('/api/detection',(req,res)=>{
   const {merge:mergeState}=require('./lib/state');const next=mergeState(structuredClone(state),patch);
   const changed=JSON.stringify(next)!==JSON.stringify(state);if(changed)commit(patch);
   readings.forEach(r=>detection.samples.set(r.field,req.body.sampledAt));
+  if(req.body.localHud===true&&readings.length){detection.localHudAt=Date.now();detection.localHudMode=req.body.mode;}
+  if(req.body.localHud===true&&readings.some(r=>r.field==='gameTime'||r.field==='draftTimer.remaining'))detection.localClockAt=Date.now();
   if(patch.gameClock)detection.gameClock={...state.gameClock};
   if(patch.draftTimer)detection.draftTimer={...state.draftTimer};
-  res.json({applied:changed?readings.length:0,held,receivedAt:Date.now(),playoffs:playoffUpdate.report});
+  const hudPatch=req.body.localHud===true?{...patch,gameTime:state.gameTime,gameClock:state.gameClock,draftTimer:state.draftTimer,blue:state.blue,red:state.red}:undefined;
+  res.json({applied:changed?readings.length:0,held,receivedAt:Date.now(),playoffs:playoffUpdate.report,patch:hudPatch,clockExpiresAt:(detection.localClockAt||detection.seenAt)+(detection.localClockAt?4000:detection.timeoutMs)});
 });
 // A closed tab or lost capture cannot leave an extrapolated clock running forever.
-setInterval(()=>{if(detection&&Date.now()-detection.seenAt>4000)pauseDetection();},1000).unref();
+setInterval(()=>{if(!detection)return;if(detection.localClockAt&&Date.now()-detection.localClockAt>4000)pauseDetection(detection.localClockAt+4000);else if(Date.now()-detection.seenAt>detection.timeoutMs)pauseDetection(detection.seenAt+detection.timeoutMs);},1000).unref();
 app.post('/api/ocr/stop',(req,res)=>{let patch={};if(state.gameClock.running){const n=Math.min(86400,state.gameClock.seconds+Math.max(0,Math.floor((Date.now()-state.gameClock.syncedAt)/1000)));patch={gameTime:String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0'),gameClock:{running:false,seconds:n,syncedAt:Date.now()}};}if(Object.keys(patch).length)commit(patch);res.json({stopped:true});});
 app.post('/api/ocr',(req,res)=>{require('./lib/live-ocr').prepare(state,req.body);const readings=req.body.readings.filter(r=>req.body.sampledAt>=(ocrSamples.get(r.field)||0));if(!readings.length)return res.json({applied:0});const fresh=require('./lib/live-ocr').prepare(state,{...req.body,readings});const changed=readings.filter(r=>{const current=r.field.split('.').reduce((v,k)=>v?.[k],state);return current!==r.value||r.field==='gameTime'&&state.gameClock.running!==req.body.live;});if(changed.length)commit(fresh);readings.forEach(r=>ocrSamples.set(r.field,req.body.sampledAt));res.json({applied:changed.length,receivedAt:Date.now()});});
 app.get('/api/state',(req,res)=>res.json(state));app.post('/api/state',(req,res)=>res.json(commit(req.body)));app.get('/api/events',(req,res)=>{res.set({'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});req.socket.setNoDelay(true);res.flushHeaders();res.write(`data: ${JSON.stringify(state)}\n\n`);clients.add(res);const heartbeat=setInterval(()=>res.write(': heartbeat\n\n'),15000);req.on('close',()=>{clients.delete(res);clearInterval(heartbeat);});});
@@ -70,16 +76,262 @@ app.post('/api/match/fetch',async(req,res)=>{const id=String(req.body.matchId||'
 app.post('/api/hero/animation',(req,res)=>{const catalogPath=path.join(__dirname,'public/assets/catalog.json');const catalog=JSON.parse(fs.readFileSync(catalogPath,'utf8'));const h=catalog.heroes.find(h=>h.name===req.body.hero);if(!h)throw Error('Unknown hero');const position=Number(req.body.position??50);if(!Number.isFinite(position)||position<0||position>100)throw Error('Position must be 0–100');if(req.body.src!==undefined){const src=req.body.src;if(typeof src!=='string'||!/^\/assets\/uploads\/[a-f0-9]{64}\.(gif|mp4|webm)$/.test(src)||!fs.existsSync(path.join(__dirname,'public',src)))throw Error('Upload a GIF, MP4 or WebM first');h.animation=src;h.animationSource='User-uploaded media';}h.animationPosition=position;fs.writeFileSync(catalogPath+'.tmp',JSON.stringify(catalog,null,2));fs.renameSync(catalogPath+'.tmp',catalogPath);for(const client of clients)client.write('event: catalog\ndata: {}\n\n');res.json({hero:h});});
 app.post('/api/match/parse',async(req,res)=>res.json(normalize(req.body.raw,req.body.mapping||{},await fetchMatchAssets(),state)));
 app.post('/api/match/apply',async(req,res)=>{
-  const parsed=normalize(req.body.raw,req.body.mapping||{},await fetchMatchAssets(),state);
+  let patch=req.body.patch;
+  if(!patch){
+    const parsed=normalize(req.body.raw,req.body.mapping||{},await fetchMatchAssets(),state);
+    patch=parsed.patch;
+  }
   const id=String(req.body.matchId||PlayoffResults.resultId(req.body.raw)||'');
   if(id&&!/^[a-zA-Z0-9_-]{6,100}$/.test(id))throw Error('Invalid Match ID');
   for(const side of ['blue','red'])for(const key of ['turrets','lord','turtle']){
     const value=req.body.objectives?.[side]?.[key];
-    if(value!==undefined){if(!Number.isInteger(value)||value<0)throw Error('Invalid objective count');(parsed.patch[side]??={})[key]=value;}
+    if(value!==undefined){if(!Number.isInteger(value)||value<0)throw Error('Invalid objective count');(patch[side]??={})[key]=value;}
   }
-  const result=PlayoffResults.prepareResult(state,parsed.patch,{id});
+  if(req.body.mvp&&typeof req.body.mvp==='object')patch.mvp=req.body.mvp;
+  if(req.body.scene)patch.scene=req.body.scene;
+  const result=PlayoffResults.prepareResult(state,patch,{id});
   res.json({state:commit(result.patch),playoffs:result.report});
 });
+const GeminiVision=require('./lib/gemini-vision');
+const aiConfigFile=path.join(__dirname,'ai-config.json');
+function getAiKey(){
+  if(process.env.GEMINI_API_KEY)return process.env.GEMINI_API_KEY.trim();
+  try{
+    if(fs.existsSync(aiConfigFile)){
+      const cfg=JSON.parse(fs.readFileSync(aiConfigFile,'utf8'));
+      if(cfg.geminiApiKey)return String(cfg.geminiApiKey).trim();
+    }
+  }catch{}
+  return '';
+}
+app.get('/api/ai/config',(req,res)=>{const k=getAiKey();res.json({hasKey:!!k,masked:k?k.slice(0,6)+'...'+k.slice(-4):''});});
+app.get('/api/ai/models',(req,res)=>{res.json({models:GeminiVision.getModelStatus(),activeCount:GeminiVision.getActiveModels().length});});
+app.post('/api/ai/config',(req,res)=>{const key=String(req.body.geminiApiKey||'').trim();fs.writeFileSync(aiConfigFile,JSON.stringify({geminiApiKey:key},null,2));res.json({saved:true,hasKey:!!key});});
+app.post('/api/match/ai-scan',async(req,res)=>{
+  const key=String(req.body.apiKey||getAiKey()).trim();
+  if(!key)throw Error('Gemini API key is required. Paste your Google AI Studio API key in the Post-Match tab or set GEMINI_API_KEY.');
+  if(!req.body.image)throw Error('No scoreboard image provided for AI analysis.');
+  const result=await GeminiVision.analyzeScoreboard(req.body.image,key,Playoffs.teams);
+  res.json(result);
+});
+app.post('/api/draft/ai-scan',async(req,res)=>{
+  const key=String(req.body.apiKey||getAiKey()).trim();
+  if(!key)throw Error('Gemini API key is required. Configure your Google AI Studio key first.');
+  if(!req.body.image)throw Error('No draft screenshot provided for AI analysis.');
+  const result=await GeminiVision.analyzeDraft(req.body.image,key,Playoffs.teams);
+  res.json(result);
+});
+app.post('/api/game/ai-scan',async(req,res)=>{
+  const key=String(req.body.apiKey||getAiKey()).trim();
+  if(!key)throw Error('Gemini API key is required. Configure your Google AI Studio key first.');
+  if(!req.body.image)throw Error('No in-game screenshot provided for AI analysis.');
+  const currentMatch = {
+    blue: (state.blue?.players || []).map((p, i) => ({ slot: i, name: p.name, hero: p.hero })),
+    red: (state.red?.players || []).map((p, i) => ({ slot: i, name: p.name, hero: p.hero })),
+    blueHeroes: (state.blue?.players || []).map(p => p.hero).filter(Boolean),
+    redHeroes: (state.red?.players || []).map(p => p.hero).filter(Boolean)
+  };
+  const result=await GeminiVision.analyzeInGame(req.body.image,key,Playoffs.teams,currentMatch);
+  res.json(result);
+});
+app.post('/api/detection/ai-live',async(req,res)=>{
+  let ownDetection=detection;
+  if(req.body.session){
+    if(!ownDetection||ownDetection.source!=='ai'||req.body.session!==ownDetection.id)return res.json({applied:false,expired:true});
+  }else{
+    if(!ownDetection||ownDetection.source!=='ai'){
+      detection={
+        id:require('node:crypto').randomUUID(),
+        source:'ai',
+        timeoutMs:60000,
+        sampledAt:0,
+        samples:new Map(),
+        playoffReadings:new Map(),
+        seenAt:Date.now()
+      };
+      ownDetection=detection;
+    }
+  }
+  const sampledAt=Number.isFinite(req.body.sampledAt)?req.body.sampledAt:Date.now();
+  if(sampledAt>Date.now()+1000||sampledAt<Date.now()-30000)throw Error('Invalid or expired AI capture timestamp');
+  const key=String(req.body.apiKey||getAiKey()).trim();
+  if(!key)throw Error('Gemini API key is required. Configure your Google AI Studio key first.');
+  if(!req.body.image)throw Error('No screenshot provided for live AI analysis.');
+  const mode=req.body.mode||'auto';
+  const currentMatch = {
+    blue: (state.blue?.players || []).map((p, i) => ({ slot: i, name: p.name, hero: p.hero })),
+    red: (state.red?.players || []).map((p, i) => ({ slot: i, name: p.name, hero: p.hero })),
+    blueHeroes: (state.blue?.players || []).map(p => p.hero).filter(Boolean),
+    redHeroes: (state.red?.players || []).map(p => p.hero).filter(Boolean)
+  };
+  let result;
+  const controller=new AbortController();
+  (ownDetection.requests??=new Set()).add(controller);
+  const disconnect=()=>{if(!res.writableEnded)controller.abort();};
+  res.on('close',disconnect);
+  try{
+    if(mode==='draft')result=await GeminiVision.analyzeDraft(req.body.image,key,Playoffs.teams);
+    else if(mode==='game')result=await GeminiVision.analyzeInGame(req.body.image,key,Playoffs.teams,currentMatch);
+    else if(mode==='result')result=await GeminiVision.analyzeScoreboard(req.body.image,key,Playoffs.teams);
+    else result=await GeminiVision.analyzeLiveScreen(req.body.image,key,Playoffs.teams,currentMatch,{realtime:req.body.realtime===true,signal:controller.signal});
+  }catch(error){
+    if(res.destroyed)return;
+    if(detection!==ownDetection)return res.json({applied:false,expired:true});
+    throw error;
+  }finally{ownDetection.requests.delete(controller);res.off('close',disconnect);}
+  if(res.destroyed)return;
+  if(detection!==ownDetection)return res.json({applied:false,expired:true});
+  result.mode??=mode;
+  if(sampledAt<(detection.aiSampledAt||0)||Date.now()-sampledAt>(req.body.realtime===true?12000:30000))return res.json({applied:false,stale:true});
+  if(detection.mode&&detection.mode!==result.mode&&sampledAt<detection.sampledAt)return res.json({applied:false,stale:true});
+  detection.aiSampledAt=sampledAt;
+  result.applied=false;
+  // A capture timestamp keeps both OBS and the monitor in time with the feed,
+  // even when recognition takes several seconds. Repeated readings can pause it.
+  const clockValue=result.mode==='game'?result.patch?.gameTime:result.mode==='draft'?result.patch?.draftTimer?.remaining:undefined;
+  const previous=detection.aiClockSample;
+  const frozen=previous&&previous.mode===result.mode&&previous.value===clockValue&&sampledAt-previous.at>=1500;
+  if(!previous||previous.mode!==result.mode||previous.value!==clockValue)detection.aiClockSample={mode:result.mode,value:clockValue,at:sampledAt};
+  const ticking=req.body.live===true&&!frozen;
+  if(!req.body.autoApply||!result.patch||detection.mode!==result.mode)pauseDetection();
+  detection.mode=result.mode;
+  detection.sampledAt=Math.max(detection.sampledAt,sampledAt);
+  detection.seenAt=Date.now();
+  result.clockExpiresAt=detection.localClockAt?detection.localClockAt+4000:detection.seenAt+detection.timeoutMs;
+
+  if(result.patch){
+    if(req.body.switchScene===false){
+      delete result.patch.scene;
+    }
+    if(['game','result'].includes(result.mode)&&/^\d{1,4}:[0-5]\d$/.test(result.patch.gameTime)){
+      const [m,s]=String(result.patch.gameTime).split(':').map(Number);
+      const totalSec = m*60+s;
+      if(totalSec<=86400){
+        const isBackwardsJump = result.mode === 'game' && state.gameClock.running && totalSec < state.gameClock.seconds - 5;
+        if (!isBackwardsJump) {
+          result.patch.gameClock={
+            running:result.mode==='game'&&ticking,
+            seconds:totalSec,
+            syncedAt:sampledAt
+          };
+        } else {
+          delete result.patch.gameTime;
+        }
+      }
+    }else if(result.mode==='draft'&&result.patch.draftTimer){
+      const rem=Number.isInteger(result.patch.draftTimer.remaining)?result.patch.draftTimer.remaining:30;
+      result.patch.draftTimer={
+        ...state.draftTimer,
+        remaining:rem,
+        endAt:ticking?sampledAt+rem*1000:null
+      };
+    }
+    AiLiveState.protectNewerHud(result.patch,detection.samples,sampledAt);
+    if(req.body.autoApply){
+      let finalPatch=result.patch;
+      if(result.mode==='result'){
+        for (const side of ['blue', 'red']) {
+          if (finalPatch[side]?.players && Array.isArray(state[side]?.players)) {
+            finalPatch[side].players = Array.from({ length: 5 }, (_, i) => {
+              const p = finalPatch[side].players[i] || {};
+              const cur = state[side].players[i] || {};
+              const botMatch = (p.name || p.rawName || cur.name || '').match(/\[Computer\]\s*([A-Za-z0-9\s'-]+)/i);
+              const hero = botMatch ? GeminiVision.matchHero(botMatch[1]) : (GeminiVision.matchHero(p.hero) || cur.hero || String(p.hero || '').trim());
+              return { ...p, hero };
+            });
+          }
+        }
+        if(result.patch.winner&&state.playoffs){
+          try{
+            const pr=PlayoffResults.prepareResult(state,result.patch,{source:'ai-live'});
+            finalPatch=pr.patch;
+            result.playoffs=pr.report;
+          }catch(e){
+            console.warn('Playoffs auto-update on AI live result:',e.message);
+          }
+        }
+      } else if (result.mode === 'draft') {
+        for (const side of ['blue', 'red']) {
+          if (finalPatch[side]) {
+            if (Array.isArray(finalPatch[side].bans) && Array.isArray(state[side]?.bans)) {
+              finalPatch[side].bans = Array.from({ length: 5 }, (_, i) => {
+                const b = finalPatch[side].bans[i] || state[side].bans[i] || '';
+                return GeminiVision.matchHero(b) || b;
+              });
+            }
+            if (Array.isArray(finalPatch[side].players) && Array.isArray(state[side]?.players)) {
+              finalPatch[side].players = Array.from({ length: 5 }, (_, i) => {
+                const p = finalPatch[side].players[i] || {};
+                const cur = state[side].players[i] || {};
+                const incomingName = String(p.name || '').trim();
+                const isPlaceholder = !incomingName || /^Player\s*\d+$/i.test(incomingName);
+                const curName = String(cur.name || '').trim();
+                const curHasReal = curName && !/^Player\s*\d+$/i.test(curName);
+                const name = (isPlaceholder && curHasReal) ? curName : (incomingName || curName || `Player ${i + 1}`);
+
+                const botMatch = (name || p.rawIgn || curName).match(/\[Computer\]\s*([A-Za-z0-9\s'-]+)/i);
+                const hero = botMatch ? GeminiVision.matchHero(botMatch[1]) : (GeminiVision.matchHero(p.hero) || cur.hero || '');
+                return { ...cur, ...p, hero, name };
+              });
+            }
+            const names = (finalPatch[side]?.players || []).map(p => p.name || p.rawIgn).filter(Boolean);
+            if (names.length >= 2 && (!state[side].tag || ['BLU', 'RED', 'TBD'].includes(state[side].tag))) {
+              const matched = Playoffs.identify(names);
+              if (matched?.team) {
+                const idn = Playoffs.identity(matched.team);
+                finalPatch[side].name = idn.name;
+                finalPatch[side].tag = idn.tag;
+                finalPatch[side].logo = idn.logo;
+              }
+            }
+          }
+        }
+      } else if (result.mode === 'game') {
+        detection.aiPlayers??={blue:new Map(),red:new Map()};
+        const rawGame=result.data?.game||result.data;
+        for (const side of ['blue', 'red']) {
+          if (finalPatch[side]) {
+            if (detection.aiGameSeen && finalPatch[side].kills !== undefined && state[side]?.kills) {
+              finalPatch[side].kills = Math.max(state[side].kills, finalPatch[side].kills);
+            }
+            if (detection.aiGameSeen && finalPatch[side].turrets !== undefined && state[side]?.turrets) {
+              finalPatch[side].turrets = Math.max(state[side].turrets, finalPatch[side].turrets);
+            }
+            if (detection.aiGameSeen && finalPatch[side].lord !== undefined && state[side]?.lord) {
+              finalPatch[side].lord = Math.max(state[side].lord, finalPatch[side].lord);
+            }
+            if (detection.aiGameSeen && finalPatch[side].turtle !== undefined && state[side]?.turtle) {
+              finalPatch[side].turtle = Math.max(state[side].turtle, finalPatch[side].turtle);
+            }
+          }
+          if (finalPatch[side]?.players && Array.isArray(state[side]?.players)) {
+            finalPatch[side].players=AiLiveState.mergePlayers(state[side].players,finalPatch[side].players,rawGame?.[side]?.players,detection.aiPlayers[side],sampledAt);
+          }
+          const names = (finalPatch[side]?.players || []).map(p => p.name || p.rawIgn).filter(Boolean);
+          if (names.length >= 2 && (!state[side].tag || ['BLU', 'RED', 'TBD'].includes(state[side].tag))) {
+            const matched = Playoffs.identify(names);
+            if (matched?.team) {
+              const idn = Playoffs.identity(matched.team);
+              finalPatch[side].name = idn.name;
+              finalPatch[side].tag = idn.tag;
+              finalPatch[side].logo = idn.logo;
+            }
+          }
+        }
+      }
+      commit(finalPatch);
+      detection.aiGameSeen=result.mode==='game';
+      // The monitor must show the same accepted values as OBS, not raw guesses.
+      result.patch={...finalPatch};
+      if(result.mode==='game')result.patch={...result.patch,gameTime:state.gameTime,gameClock:state.gameClock,blue:state.blue,red:state.red};
+      if(finalPatch.gameClock)detection.gameClock={...state.gameClock};
+      if(finalPatch.draftTimer)detection.draftTimer={...state.draftTimer};
+      result.applied=true;
+    }
+  }
+  res.json(result);
+});
+
 const Swiss=require('./lib/swiss');
 function swissLogos(){try{return JSON.parse(fs.readFileSync(path.join(__dirname,'public/assets/catalog.json'),'utf8')).logos||[];}catch{return [];}}
 function swissLogoFor(name){const l=swissLogos().find(l=>l.name.toLowerCase()===String(name).toLowerCase());return l?l.url:'';}

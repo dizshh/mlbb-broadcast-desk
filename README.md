@@ -76,7 +76,11 @@ All 41 bundled organization logos have transparent PNG copies. Saved original lo
 
 ## OCR and synchronization
 
-For live automation, open **OCR capture > Start live auto-detect**, then choose the clean game window. Auto-detect follows drafting, the spectator scoreboard and match results. Keep the desk page open. To replay a recording, choose **Open test video**, select **Auto-detect draft + game + result**, and start continuous OCR.
+**Start fast local detection** uses Tesseract.js with its bundled English `best_int` LSTM model for clocks, kills, gold, turrets and draft timers. Crops isolate likely foreground text, enlarge it, apply local adaptive thresholding and retry difficult reads with alternate page-segmentation settings. Two workers read the HUD while two others read details; gameplay scene checks run at most once every 750 ms so HUD readings can continue between them. Workers load concurrently while the capture picker is open. Automatic detection requires three matching frames before accepting changing statistics; game and draft clocks are anchored to their capture time and continue ticking between reads. For a quicker response, change **Confirm across frames** to 2 or 1; this increases the chance of accepting a bad read. Accuracy still depends on clean capture and correctly calibrated boxes. This is the local path; Gemini remains available separately for broad visual recognition.
+
+**AI scans** target one scan per second, with only one request in flight. Recognition time counts toward that interval; slower responses trigger the next capture immediately. Accepted statistics are pushed to OBS as soon as recognition completes, so their freshness depends on AI latency and retry limits. The monitor and OBS check clocks every 100 ms, using the frame's capture timestamp to account for recognition delay. The smooth-clock option applies to live video; instant scans and screenshots set a fixed time. Stopping detection, changing sources or losing capture holds its clocks, and late responses from a stopped session cannot update the broadcast. If no new AI result arrives for 15 seconds, its clocks stop extrapolating.
+
+For live automation, open **OCR capture > Start fast local detection**, then choose the clean game window. Auto-detect follows drafting, the spectator scoreboard and match results. Keep the desk page open. To replay a recording, choose **Open test video**, select **Auto-detect draft + game + result**, and start continuous OCR.
 
 In-game detection reads the clock, kills, team gold and turret counts from the supplied spectator layout. Match-result detection reads the winner, final kills, duration, player names, KDA and player gold, then switches Program to postgame when scene following is enabled. It does not invent statistics absent from the HUD. Draft detection reads the phase, countdown (including red final seconds), five picks and each side's ban slots for the current round (three per side in quarterfinals, five in semifinals, third place and grand finals). Player names stay manual by default; enable **Read draft player names** only when the captured names read cleanly. The draft preset and skin references were checked against the supplied September 13 recording.
 
@@ -134,6 +138,7 @@ node tests/scene-transition.cjs
 node tests/live-production-browser.cjs
 node tests/ocr-browser.cjs
 node tests/live-detection-browser.cjs
+node tests/ai-live-browser.cjs
 node tests/result-detection-browser.cjs
 node tests/draft-video.cjs "D:\Downloads\2026-09-13 19-54-22.mp4"
 node tests/text-fit.cjs

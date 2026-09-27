@@ -13,12 +13,56 @@
   function team(value){return teams.find(t=>[t.id,t.name,...t.aliases].some(n=>key(n)===key(value)));}
   const smallCaps={'ᴀ':'a','ʙ':'b','ᴄ':'c','ᴅ':'d','ᴇ':'e','ꜰ':'f','ɢ':'g','ʜ':'h','ɪ':'i','ᴊ':'j','ᴋ':'k','ʟ':'l','ᴍ':'m','ɴ':'n','ᴏ':'o','ᴘ':'p','ꞯ':'q','ʀ':'r','ꜱ':'s','ᴛ':'t','ᴜ':'u','ᴠ':'v','ᴡ':'w','ʏ':'y','ᴢ':'z'};
   const ignKey=value=>String(value||'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().split('').map(c=>smallCaps[c]||c).join('').replace(/[^a-z0-9]/g,'');
+  function levenshtein(a,b){
+    const m=a.length,n=b.length,d=Array.from({length:m+1},()=>new Uint16Array(n+1));
+    for(let i=0;i<=m;i++)d[i][0]=i;for(let j=0;j<=n;j++)d[0][j]=j;
+    for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)d[i][j]=a[i-1]===b[j-1]?d[i-1][j-1]:1+Math.min(d[i-1][j],d[i][j-1],d[i-1][j-1]);
+    return d[m][n];
+  }
+  function matchPlayer(raw,candidates){
+    if(!raw||!Array.isArray(candidates))return null;
+    const rawKey=ignKey(raw);
+    if(!rawKey)return null;
+    for(const c of candidates){if(ignKey(c)===rawKey)return {name:c,confidence:100,method:'exact'};}
+    for(const c of candidates){const ck=ignKey(c);if(ck.length>=3&&rawKey.endsWith(ck))return {name:c,confidence:95,method:'suffix'};}
+    const tokens=String(raw).split(/[\s|•·/\\_\-()\[\]]+/).map(ignKey).filter(t=>t.length>=2);
+    for(const c of candidates){const ck=ignKey(c);if(tokens.includes(ck))return {name:c,confidence:92,method:'token'};}
+    for(const c of candidates){const ck=ignKey(c);if(ck.length>=4&&(rawKey.includes(ck)||ck.includes(rawKey)))return {name:c,confidence:88,method:'contains'};}
+    let best=null,bestDist=999;
+    const targets=[rawKey,...tokens];
+    for(const c of candidates){
+      const ck=ignKey(c);
+      for(const target of targets){
+        const dist=levenshtein(target,ck),maxLen=Math.max(target.length,ck.length),sim=1-(dist/maxLen);
+        if(sim>=0.7&&dist<bestDist){bestDist=dist;best={name:c,confidence:Math.round(sim*100),method:'fuzzy'};}
+      }
+    }
+    return best;
+  }
+  function resolvePlayer(raw,teamHint=null){
+    if(!raw)return null;
+    if(teamHint){
+      const t=team(teamHint);
+      if(t){const m=matchPlayer(raw,t.players);if(m)return {...m,team:t};}
+    }
+    let best=null;
+    for(const t of teams){
+      const m=matchPlayer(raw,t.players);
+      if(m&&(!best||m.confidence>best.confidence))best={...m,team:t};
+    }
+    return best;
+  }
   function identify(players){
-    const names=[...new Set((players||[]).map(p=>ignKey(typeof p==='string'?p:p?.name)).filter(Boolean))];
-    const votes=teams.map(t=>({team:t,matches:names.filter(n=>t.players.some(p=>ignKey(p)===n))})).sort((a,b)=>b.matches.length-a.matches.length);
-    // Three distinct registered IGNs identify a starting five. Repeated rows,
-    // punctuation and small-cap lettering cannot create extra roster votes.
-    const best=votes[0];return best.matches.length>=3&&best.matches.length>votes[1].matches.length?best:null;
+    const list=(players||[]).map(p=>typeof p==='string'?p:p?.name).filter(Boolean);
+    const votes=teams.map(t=>{
+      const matched=new Set();
+      for(const p of list){
+        const m=matchPlayer(p,t.players);
+        if(m)matched.add(m.name);
+      }
+      return {team:t,matches:[...matched]};
+    }).sort((a,b)=>b.matches.length-a.matches.length);
+    const best=votes[0];return best&&best.matches.length>=3&&best.matches.length>(votes[1]?.matches.length||0)?best:null;
   }
   const identity=t=>({name:t.name,tag:t.id,logo:'/assets/playoffs/logos/'+t.id.replaceAll(' ','-')+'.png'});
   function defaults(){return {matches:Array.from({length:7},(_,i)=>({blue:i<4?teams[i*2].id:'',red:i<4?teams[i*2+1].id:'',blueScore:0,redScore:0})),featuredTeam:'JMES',useVideo:false,bestOf:[3,3,5],portraits:[],autoResults:true,results:[],captureArmed:true};}
@@ -42,5 +86,5 @@
   }
   function format(p,index,value){p=structuredClone(migrate(p));if(!Number.isInteger(index)||index<0||index>2)throw Error('Invalid playoff round');const before=resolved(p);p.bestOf[index]=value;validate(p);for(let i=4;i<7;i++){const now=resolved(p)[i];if(now.blue!==before[i].blue||now.red!==before[i].red){p.matches[i].blueScore=0;p.matches[i].redScore=0;}}return p;}
   function feature(p,s){const value=p?.featuredTeam||'JMES';return team(value==='blue'||value==='red'?(team(s[value]?.tag)?.id||s[value]?.name):value);}
-  return {teams,team,ignKey,identify,identity,defaults,migrate,validate,resolved,edit,format,round,feature};
+  return {teams,team,ignKey,matchPlayer,resolvePlayer,levenshtein,identify,identity,defaults,migrate,validate,resolved,edit,format,round,feature};
 });

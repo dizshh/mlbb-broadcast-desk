@@ -9,27 +9,42 @@
     game.push(box(`${side}.players.${i}.hero`,side==='blue'?9:1497,299+i*72,37,34,1543,856));
   }
   const legacyGame=structuredClone(game);
-  const spectator={gameTime:[921,10,80,33],'blue.kills':[844,9,61,39],'red.kills':[1022,9,61,39],'blue.gold':[744,12,82,33],'red.gold':[1137,12,78,33],'blue.turrets':[671,12,25,32],'red.turrets':[1257,12,23,32]};
-  for(const r of game){
-    let coords=spectator[r.field];
-    if(r.field.includes('.players.')){
-      const [side,,index,key]=r.field.split('.'),red=side==='red';
-      const rects={name:[red?1722:6,347,194,23],kda:[red?1781:82,370,66,25],level:[red?1895:7,402,19,21],hero:[red?1864:24,384,36,34]};
-      coords=[...rects[key]];coords[1]+=Number(index)*90;
+  const spectator = {
+    'gameTime': [915, 38, 90, 42],
+    'blue.kills': [840, 38, 68, 44],
+    'red.kills': [1012, 38, 68, 44],
+    'blue.gold': [742, 40, 85, 40],
+    'red.gold': [1092, 40, 85, 40],
+    'blue.turrets': [672, 40, 32, 40],
+    'red.turrets': [1216, 40, 32, 40]
+  };
+  for (const r of game) {
+    let coords = spectator[r.field];
+    if (r.field.includes('.players.')) {
+      const [side,, index, key] = r.field.split('.'), red = side === 'red', i = Number(index);
+      const yBase = Math.round(380 + i * 75.5);
+      const rects = {
+        name: [red ? 1745 : 10, yBase, 160, 24],
+        kda: [red ? 1745 : 72, yBase + 24, 92, 24],
+        level: [red ? 1888 : 6, yBase + 52, 26, 22],
+        hero: [red ? 1860 : 14, yBase + 10, 46, 46]
+      };
+      coords = rects[key];
     }
-    [r.x,r.y,r.w,r.h]=coords;
+    if (coords) [r.x, r.y, r.w, r.h] = coords;
   }
   const result=[
     {field:'resultStatus',x:725,y:42,w:475,h:100},
-    {field:'blue.kills',x:535,y:48,w:140,h:100},
-    {field:'red.kills',x:1255,y:48,w:145,h:100},
-    {field:'gameTime',x:1510,y:112,w:95,h:42}
+    {field:'blue.kills',x:840,y:7,w:60,h:42},
+    {field:'red.kills',x:1020,y:7,w:60,h:42},
+    {field:'gameTime',x:915,y:7,w:90,h:42}
   ];
   for(const side of ['blue','red'])for(let i=0;i<5;i++){
-    const y=245+i*140,red=side==='red';
-    result.push({field:`${side}.players.${i}.name`,x:red?1340:340,y,w:270,h:40});
-    result.push({field:`${side}.players.${i}.kda`,x:red?1200:590,y,w:140,h:40});
-    result.push({field:`${side}.players.${i}.gold`,x:red?1100:740,y,w:110,h:40});
+    const y=232+i*138,red=side==='red';
+    result.push({field:`${side}.players.${i}.name`,x:red?1330:340,y,w:red?240:245,h:34});
+    result.push({field:`${side}.players.${i}.kda`,x:red?1175:590,y,w:145,h:34});
+    result.push({field:`${side}.players.${i}.gold`,x:red?1080:745,y,w:red?85:90,h:34});
+    result.push({field:`${side}.players.${i}.hero`,x:red?1625:200,y:y-4,w:90,h:90});
   }
   // Clean 1920 x 1080 draft feed, calibrated against the supplied recording.
   // Red bans fill from the right edge inward; slots are stored in ban order.
@@ -49,7 +64,7 @@
     const anchor=mode==='result'?'resultStatus':mode==='draft'?'draftPhase':'gameTime';if(!rows.some(r=>r.field===anchor))throw Error('Keep the scene-detection region');
     return rows;
   }
-  function resultOutcome(text){const s=String(text).trim().replace(/\s+/g,' ');if(/victory/i.test(s))return 'blue';if(/defeat/i.test(s))return 'red';return null;}
+  function resultOutcome(text){const s=String(text||'').trim().replace(/\s+/g,' ');if(/victory|clean/i.test(s))return 'blue';if(/defeat/i.test(s))return 'red';return null;}
   function draftPhase(text){const s=String(text).trim().replace(/\s+/g,' ');const m=s.match(/^(Allied|Enemy) Team (Ban|Pick)$/i);return m?`${/^allied$/i.test(m[1])?'Allied':'Enemy'} Team ${/^ban$/i.test(m[2])?'Ban':'Pick'}`:/^(Last (?:Change|Changes)|Battle Preparation|Adjust(?:ment)?|Swap Heroes)$/i.test(s)?'Last Changes':null;}
   function draftClock(text){const s=String(text).trim().replace(/[Oo]/g,'0').replace(/\s/g,'');if(/^00:[0-5]\d$/.test(s))return Number(s.slice(3));return /^\d{1,2}$/.test(s)&&Number(s)<=60?Number(s):null;}
   function classify(readings,threshold=65){
